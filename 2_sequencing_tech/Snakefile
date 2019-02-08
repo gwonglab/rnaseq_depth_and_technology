@@ -1,0 +1,693 @@
+configfile: "{}/run_info.yaml".format(workflow.basedir)
+from itertools import chain
+
+RUNS=list(chain.from_iterable([run]*len(config["runs"][run]["subsets"]) for run in config["runs"]))
+SUBSETS=list(chain.from_iterable(config["runs"][run]["subsets"] for run in config["runs"]))
+RUNS_4GB=[run for run in config["runs"] if 4 in config["runs"][run]["subsets"]]
+
+SUMMARY_RUNS=list(chain.from_iterable([run]*len(config["runs"][run]["subsets"]) for run in config["summary_runs"]))
+SUMMARY_SUBSETS=list(chain.from_iterable(config["runs"][run]["subsets"] for run in config["summary_runs"]))
+SUMMARY_RUNS_4GB=[run for run in config["summary_runs"] if 4 in config["runs"][run]["subsets"]]
+
+rule all:
+    input:
+        # Subset
+        expand(["runs/{run}/subsets/{subset}/1.fq", "runs/{run}/subsets/{subset}/2.fq"], zip, run=RUNS, subset=SUBSETS),
+        # Assembly
+        #expand("runs/{run}/subsets/{subset}/gapcloser.fa", zip, run=RUNS, subset=SUBSETS),
+        # Blat split -> run on cluster
+        expand("runs/{run}/subsets/{subset}/blat/split/gapcloser_part_00.fa", zip, run=RUNS, subset=SUBSETS),
+        # Last results
+        expand(["runs/{run}/subsets/{subset}/last/reads.maf.zstd","runs/{run}/subsets/{subset}/last/scaffolds.maf.zstd"], zip, run=RUNS, subset=SUBSETS),
+        # Blat runs
+        expand("runs/{run}/subsets/{subset}/blat/combined.blat", zip, run=RUNS, subset=SUBSETS),
+        # Genome read depth
+        expand(["runs/{run}/subsets/{subset}/hisat2_depth.txt"], zip, run=RUNS, subset=SUBSETS),
+        # Kallisto 4GB Runs
+        expand("runs/{run}/subsets/{subset}/kallisto/abundance.h5", run=RUNS_4GB, subset=[4]),
+        # Hisat2 subsets
+        expand("runs/{run}/subsets/{subset}/grch38.bam", zip, run=RUNS, subset=SUBSETS),
+        # Transcript read depth
+        expand("runs/{run}/subsets/{subset}/transcript_read_depth.txt", zip, run=RUNS, subset=SUBSETS),
+        # Preprocessing stats
+        #expand("runs/{run}/preprocessing_stats.txt", run=RUNS), # Individual
+        "results/preprocessing_stats.txt", # Merged
+        "results/completeness_stats.txt",
+        "results/filtering_stats.txt",
+        "results/exome_genome_coverage.pdf",
+        "results/transcript_depth/min_transcript_depth_4gb.txt",
+        expand("results/shared_complete_transcripts/{subset}gb.txt", subset=[1,2,3,4,5,6,8,10]),
+        # Assembly completeness
+        expand(["runs/{run}/subsets/{subset}/transcript_complete_counts.txt", "runs/{run}/subsets/{subset}/unambiguous_complete_transcript_names.txt"], zip, run=RUNS, subset=SUBSETS),
+        # Complete transcripts from each platform
+        # TODO: Is this replaced?
+        # expand("results/subsets/{subset}/complete_unambiguous_transcripts_{platform}.txt", subset=[1,2,3,4,5,6,8,10], platform=["BGISEQ", "HiSeq"]),
+        # Incomplete Transcript stats
+        # expand("runs/{run}/subsets/{subset}/transcript_stats", zip, run=SUMMARY_RUNS, subset=SUMMARY_SUBSETS),
+        #expand("runs/{run}/subsets/{subset}/gap_vs_covered.pdf", zip, run=SUMMARY_RUNS, subset=SUMMARY_SUBSETS),
+        expand("results/gap_vs_covered_{subset}gb_{platform}.pdf", platform=["HiSeq", "BGISEQ"], subset=[1,2,3,4,5,6,8]),
+        # Complete per platform
+        expand("results/complete_transcripts/BGISEQ_{subset}_complete_transcripts.txt", subset=[1,2,3,4,5,6,8,10]),
+        expand("results/complete_transcripts/HiSeq_{subset}_complete_transcripts.txt", subset=[1,2,3,4,5,6,8,10]),
+        # GC Bias Plots
+        expand("results/gc_bias/{run}_{subset}gb_gc_bias.pdf", run=SUMMARY_RUNS_4GB, subset=[4]),
+        # Kallisto plots
+        "results/kallisto_plots/SRR1261168_vs_ERR1831364_kallisto_4gb.pdf",
+        "results/kallisto_plots/SRR950078_vs_ERR1831364_kallisto_4gb.pdf"
+
+rule compare_runs_kallisto:
+    input:
+        run1 = "runs/{run1}/subsets/{subset}/kallisto/abundance.tsv",
+        run2 = "runs/{run2}/subsets/{subset}/kallisto/abundance.tsv",
+        transcript_gc = "dbs/grch38/grch38_transcripts_gc.txt"
+    output:
+        "results/kallisto_plots/{run1}_vs_{run2}_kallisto_{subset}gb.pdf"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/compare_expression.py {input.transcript_gc} {input.run1} {input.run2} -o {output} -t 'Ratio of {wildcards.run1} Expression Levels to {wildcards.run2} (Kallisto)\nvs GC (Max 100bp window) ({wildcards.subset}GB)' -x1 0.3 -x2 1.0"
+
+def minimum_average_depth_transcripts_input(wildcards):
+    return expand("runs/{run}/subsets/{subset}/average_transcript_read_depth.txt", run=[run for run in config["summary_runs"] if int(wildcards.subset) in config["runs"][run]["subsets"]], subset=wildcards.subset)
+
+rule minimum_average_depth_transcripts:
+    input:
+        minimum_average_depth_transcripts_input
+    output:
+        "results/transcript_depth/min_transcript_depth_{subset}gb.txt"
+    params:
+        run_count = lambda wildcards, input: len(input)
+    shell:
+        "cat {input} | awk '($2 > 10)' | cut -f 1 | sort | uniq -c | awk '($1 == {params.run_count}){{print $2}}' > {output}"
+
+def plot_gap_vs_covered_input(params):
+    input = []
+    platform = params.platform
+    subset = params.subset
+    for run in config["summary_runs"]:
+        if int(subset) in config["runs"][run]["subsets"] and config["runs"][run]["platform"] == platform:
+            input.append("runs/{}/subsets/{}/transcript_stats/wholeseq_read_gap_info.txt".format(run, subset))
+            input.append("runs/{}/subsets/{}/transcript_stats/k100_covered_info.txt".format(run, subset))
+    return input
+
+rule plot_gap_vs_covered:
+    input:
+        plot_gap_vs_covered_input
+    output:
+        "results/gap_vs_covered_{subset}gb_{platform}.pdf"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        """
+            {workflow.basedir}/bin/plot_gap_vs_covered_gc.py -t "{wildcards.platform}: Assembled vs Gap Regions" {input} -o {output} -m metadata.txt
+        """
+
+rule platform_complete_transcripts:
+    input:
+        expand("runs/{run}/subsets/{subset}/unambiguous_complete_transcript_names.txt", zip, run=SUMMARY_RUNS, subset=SUMMARY_SUBSETS)
+    output:
+        expand("results/complete_transcripts/BGISEQ_{subset}_complete_transcripts.txt", subset=[1,2,3,4,5,6,8,10]),
+        expand("results/complete_transcripts/HiSeq_{subset}_complete_transcripts.txt", subset=[1,2,3,4,5,6,8,10]),
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/unambiguous_transcripts_per_platform.py -m metadata.txt -o results/complete_transcripts -r runs"
+
+
+rule plot_blat_exome_genome_coverage:
+    input:
+        expand("runs/{run}/subsets/{subset}/exome_results.txt", zip, run=SUMMARY_RUNS, subset=SUMMARY_SUBSETS)
+    output:
+        "results/exome_genome_coverage.pdf"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/plot_exome_genome.py -m metadata.txt -o {output} -r runs"
+
+rule shared_complete_transcripts:
+    input:
+        expand("runs/{run}/subsets/{subset}/transcript_complete_counts.txt", zip, run=SUMMARY_RUNS, subset=SUMMARY_SUBSETS)
+    output:
+        expand("results/shared_complete_transcripts/{subset}gb.txt", subset=[1,2,3,4,5,6,8,10]),
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/compare_complete_transcripts.py -m metadata.txt -o results/shared_complete_transcripts -r runs"
+
+rule preprocessing_table:
+    input:
+        expand("runs/{run}/preprocessing_stats.txt", run=config["summary_runs"])
+    output:
+        "results/preprocessing_stats.txt"
+    shell:
+        """
+            echo -e "Name\tRaw\tFiltered\tMapped\tDeduplicated" > {output}
+            for stat_file in {input}
+            do
+                cat "$stat_file"
+            done >> {output}
+        """
+
+rule filtering_table:
+    input:
+        expand("runs/{run}/filtering_stats.txt", run=config["summary_runs"])
+    output:
+        "results/filtering_stats.txt"
+    shell:
+        """
+            echo -e "Name\tAdapter\tLow Quality\tN%" > {output}
+            for stat_file in {input}
+            do
+                cat "$stat_file"
+            done >> {output}
+        """
+
+rule completeness_table:
+    input:
+        expand("runs/{run}/subsets/{subset}/transcript_complete_counts.txt", zip, run=RUNS, subset=SUBSETS)
+    output:
+        "results/completeness_stats.txt"
+    run:
+        with open(output[0], "w") as output_h:
+            for run in config["runs"]:
+                output_h.write(run)
+                for subset in config["runs"][run]["subsets"]:
+                    unambiguous_count = open("runs/{}/subsets/{}/transcript_complete_counts.txt".format(run,subset)).readline().strip().split("\t")[1]
+                    output_h.write("\t{}".format(unambiguous_count))
+                output_h.write("\n")
+
+rule get_sra:
+    output:
+        touch("runs/{run}/sra.done")
+    conda:
+        "envs/comparison.yaml"
+    threads: 1
+    shell:
+        "prefetch {wildcards.run}"
+
+def get_run_input(wildcards):
+    needed = []
+    if wildcards.run.startswith('COMBINED'):
+        for run in config["runs"][wildcards.run]["runs"]:
+            needed.append("runs/{0}/raw/{0}_1.fastq.gz".format(run))
+            needed.append("runs/{0}/raw/{0}_2.fastq.gz".format(run))
+    else:
+        needed.append("runs/{0}/sra.done".format(wildcards.run))
+    return needed
+
+rule get_run:
+    input: get_run_input
+    output:
+        fq1 = "runs/{run}/raw/{run}_1.fastq.gz",
+        fq2 = "runs/{run}/raw/{run}_2.fastq.gz"
+    conda:
+        "envs/comparison.yaml"
+    threads: 1
+    shell:
+        """
+            if [[ "{wildcards.run}" == "COMBINED"* ]]
+            then
+                cat $(echo {input} | tr ' ' '\n' | grep '_1.fastq.gz$' | tr '\n' ' ') > {output.fq1}
+                cat $(echo {input} | tr ' ' '\n' | grep '_2.fastq.gz$' | tr '\n' ' ') > {output.fq2}
+            else
+                fastq-dump --split-files --defline-qual '+' --defline-seq '@$sn/$ri' --gzip -O runs/{wildcards.run}/raw {wildcards.run}
+            fi
+        """
+
+rule soapnuke:
+    input:
+        fq1 = rules.get_run.output.fq1,
+        fq2 = rules.get_run.output.fq2
+    output:
+        fq1 = "runs/{run}/soapnuke/Clean_{run}_1.fastq.gz",
+        fq2 = "runs/{run}/soapnuke/Clean_{run}_2.fastq.gz",
+        preprocessing_stats = "runs/{run}/soapnuke/Basic_Statistics_of_Sequencing_Quality.txt",
+        filtering_stats = "runs/{run}/soapnuke/Statistics_of_Filtered_Reads.txt",
+    log: "runs/{run}/soapnuke/soapnuke.log"
+    threads: 1
+    run:
+        if config["runs"][wildcards.run]["platform"] == "HiSeq":
+            shell("{workflow.basedir}/bin/SOAPnuke filter -Q 2 -G -l 10 -q 0.1 -n 0.01 -f AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC -r AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTAGATCTCGGTGGTCGCCGTATCATT -1 {input.fq1} -2 {input.fq2} -o runs/{wildcards.run}/soapnuke &> {log}")
+        elif config["runs"][wildcards.run]["platform"] == "BGISEQ":
+            shell("{workflow.basedir}/bin/SOAPnuke filter -Q 2 -G -l 10 -q 0.1 -n 0.01 -f AAGTCGGAGGCCAAGCGGTCTTAGGAAGACAA -r CAACTCCTTGGCTCACAGAACGACATGGCTACGATCCGACTT -1 {input.fq1} -2 {input.fq2} -o runs/{wildcards.run}/soapnuke &> {log}")
+        else:
+            raise(Exception("Only HiSeq and BGISEQ platforms supported"))
+
+rule hisat2_db:
+    output:
+        "dbs/hisat2/grch38_snp_tran/genome_snp_tran.1.ht2",
+        "dbs/hisat2/grch38_snp_tran/genome_snp_tran.2.ht2",
+        "dbs/hisat2/grch38_snp_tran/genome_snp_tran.3.ht2",
+        "dbs/hisat2/grch38_snp_tran/genome_snp_tran.4.ht2",
+        "dbs/hisat2/grch38_snp_tran/genome_snp_tran.5.ht2",
+        "dbs/hisat2/grch38_snp_tran/genome_snp_tran.6.ht2",
+        "dbs/hisat2/grch38_snp_tran/genome_snp_tran.7.ht2",
+        "dbs/hisat2/grch38_snp_tran/genome_snp_tran.8.ht2",
+        "dbs/hisat2/grch38_snp_tran/make_grch38_snp_tran.sh"
+    threads: 1
+    shell:
+        "curl -s ftp://ftp.ccb.jhu.edu/pub/infphilo/hisat2/data/grch38_snp_tran.tar.gz | tar -xz -C dbs/hisat2"
+
+rule grch38_fa:
+    input:
+        rules.hisat2_db.output
+    output:
+        "dbs/grch38/grch38.fa"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "hisat2-inspect dbs/hisat2/grch38_snp_tran/genome_snp_tran > {output}"
+
+rule grch38_ooc:
+    input:
+        rules.grch38_fa.output
+    output:
+        "dbs/grch38/grch38_11.ooc"
+    threads: 1
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "blat {input} -makeOoc={output} /dev/null /dev/null"
+
+rule gencode_db:
+    output:
+        "dbs/gencode/gencode.v28.annotation.gtf"
+    threads: 1
+    # Use sed to remove chr prefix from names, as the hisat2 db does not have them
+    shell:
+        "curl -s ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_28/gencode.v28.annotation.gtf.gz | gzip -d | sed 's/^chr//' > {output}"
+
+rule nonoverlapping_gencode_transcripts:
+    input:
+        rules.gencode_db.output
+    output:
+        "dbs/gencode/gencode.v28.annotation.nonoverlapping.txt"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/find_nonoverlapping_transcripts.py -g {input} -o {output}"
+
+rule gencode_exons_bed:
+    output:
+        "dbs/gencode/gencode.exons.bed"
+    input:
+        rules.gencode_db.output
+    shell:
+        "grep -v '^#' {input} | awk '($3 == \"exon\")' | cut -f 1,4,5 > {output}"
+
+rule grch38_transcripts_fa:
+    input:
+        fa = rules.grch38_fa.output,
+        gtf = rules.gencode_db.output
+    output:
+        "dbs/grch38/grch38_transcripts.fa"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "gffread {input.gtf} -g {input.fa} -w {output}"
+
+rule grch38_transcripts_gc_content:
+    input:
+        rules.grch38_transcripts_fa.output
+    output:
+        "dbs/grch38/grch38_transcripts_gc.txt"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/get_gc_content.py {input} > {output}"
+
+rule grch38_nonoverlapping_transcripts:
+    input:
+        rules.gencode_db.output
+    output:
+        "dbs/grch38/nonoverlapping_transcripts.txt"
+    shell:
+        "{workflow.basedir}/bin/find_nonoverlapping_transcripts.py -g {input} -o {output}"
+
+rule grch38_transcript_gc_content:
+    input:
+        rules.grch38_transcripts_fa.output
+    output:
+        "dbs/grch38/transcripts_gc.txt"
+    shell:
+        "{workflow.basedir}/bin/get_gc_content.py {input} > {output}"
+
+rule grch38_transcripts_lastdb:
+    input:
+        rules.grch38_transcripts_fa.output
+    output:
+        "dbs/grch38/grch38_transcripts_db.bck",
+        "dbs/grch38/grch38_transcripts_db.des",
+        "dbs/grch38/grch38_transcripts_db.prj",
+        "dbs/grch38/grch38_transcripts_db.sds",
+        "dbs/grch38/grch38_transcripts_db.ssp",
+        "dbs/grch38/grch38_transcripts_db.suf",
+        "dbs/grch38/grch38_transcripts_db.tis",
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "lastdb dbs/grch38/grch38_transcripts_db {input}"
+
+rule hisat2:
+    input:
+        fq1 = rules.soapnuke.output.fq1,
+        fq2 = rules.soapnuke.output.fq2,
+        db_files = rules.hisat2_db.output
+    output:
+        "runs/{run}/hisat2/grch38.bam"
+    conda:
+        "envs/comparison.yaml"
+    threads: 16
+    shell:
+        "hisat2 -p 16 --dta -x dbs/hisat2/grch38_snp_tran/genome_snp_tran -1 {input.fq1} -2 {input.fq2} | samtools sort -@ 16 -T runs/{wildcards.run}/hisat2/sort_tmp -o {output}"
+
+rule mark_duplicates:
+    input: rules.hisat2.output
+    output:
+        bam = "runs/{run}/mark_duplicates/grch38.bam",
+        metrics = "runs/{run}/mark_duplicates/picard.metrics",
+    conda:
+        "envs/comparison.yaml"
+    log: "runs/{run}/mark_duplicates/picard.log"
+    threads: 1
+    shell:
+        "picard -Xmx4g MarkDuplicates INPUT={input} OUTPUT={output.bam} CREATE_INDEX=true VALIDATION_STRINGENCY=SILENT METRICS_FILE={output.metrics} &> {log}"
+
+rule dedup_reads:
+    input: rules.mark_duplicates.output.bam
+    output:
+        fq1 = "runs/{run}/dedup/1.fastq",
+        fq2 = "runs/{run}/dedup/2.fastq"
+    conda:
+        "envs/comparison.yaml"
+    threads: 4
+    shell:
+        """
+            samtools view {input} \
+            | gawk '(and($2 + 16, 2031) == 99)  {{print "@" $1 "/1\t" $10 "\t+\t" $11}}' \
+            | sort --parallel=4 -T . --compress-program=lz4 --buffer-size=1G -k 1,1 | tr '\011' '\012' > "{output.fq1}"
+            samtools view {input} \
+            | gawk '(and($2 + 16, 2031) == 163) {{print "@" $1 "/2\t" $10 "\t+\t" $11}}' \
+            | sort --parallel=4 -T . --compress-program=lz4 --buffer-size=1G -k 1,1 | tr '\011' '\012' > "{output.fq2}"
+        """
+
+rule count_bases:
+    input:
+        fq1 = rules.dedup_reads.output.fq1,
+        fq2 = rules.dedup_reads.output.fq2,
+    threads: 1
+    output:
+        count = "runs/{run}/dedup/basecount.txt"
+    shell:
+        "cat {input.fq1} {input.fq2} | sed -n '2~4p' | tr -d '\n' | wc -c > {output.count}"
+
+rule generate_subsets:
+    input:
+        fq1 = rules.dedup_reads.output.fq1,
+        fq2 = rules.dedup_reads.output.fq2,
+        count = rules.count_bases.output.count,
+    output:
+        fq1 = "runs/{run}/subsets/{subset}/1.fq",
+        fq2 = "runs/{run}/subsets/{subset}/2.fq",
+    threads: 1
+    shell:
+        "{workflow.basedir}/bin/subset.py $(({wildcards.subset} * 1000000000)) runs/{wildcards.run}/subsets/{wildcards.subset}/ {input.fq1}"
+
+rule convert_subsets_fa:
+    input:
+        fq1 = rules.generate_subsets.output.fq1,
+        fq2 = rules.generate_subsets.output.fq2,
+    output:
+        fa = "runs/{run}/subsets/{subset}/reads.fa"
+    shell:
+        "(seqtk seq -A {input.fq1}; seqtk seq -A {input.fq2}) > {output}"
+
+rule assemble_subsets:
+    input:
+        fq1 = rules.generate_subsets.output.fq1,
+        fq2 = rules.generate_subsets.output.fq2,
+    output:
+        gapcloser = "runs/{run}/subsets/{subset}/gapcloser.fa"
+    threads: 16
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        """
+            echo -e "max_rd_len=150\n[LIB]\navg_ins=200\nrank=1\nq1={input.fq1}\nq2={input.fq2}" > runs/{wildcards.run}/subsets/{wildcards.subset}/soapdenovo.config
+            SOAPdenovo-Trans-31mer all -s runs/{wildcards.run}/subsets/{wildcards.subset}/soapdenovo.config -p 16 -r -F -o runs/{wildcards.run}/subsets/{wildcards.subset}/soapdenovo
+            GapCloser -a runs/{wildcards.run}/subsets/{wildcards.subset}/soapdenovo.scafSeq -b runs/{wildcards.run}/subsets/{wildcards.subset}/soapdenovo.config -o {output.gapcloser} -l 150 -p 25 -t 16
+        """
+
+rule lastal_scaffolds:
+    input:
+        rules.grch38_transcripts_lastdb.output,
+        fa = rules.assemble_subsets.output.gapcloser,
+    output:
+        "runs/{run}/subsets/{subset}/last/scaffolds.maf.zstd"
+    conda:
+        "envs/comparison.yaml"
+    threads: 16
+    shell:
+        "lastal -P {threads} dbs/grch38/grch38_transcripts_db {input.fa} | zstd -9 -T16 > {output}"
+
+rule lastal_reads:
+    input:
+        rules.grch38_transcripts_lastdb.output,
+        fa = rules.convert_subsets_fa.output.fa,
+    output:
+        "runs/{run}/subsets/{subset}/last/reads.maf.zstd"
+    conda:
+        "envs/comparison.yaml"
+    threads: 16
+    shell:
+        "lastal -P {threads} dbs/grch38/grch38_transcripts_db {input.fa} | zstd -9 -T16 > {output}"
+
+
+splits = 64
+rule split_scaffolds:
+    input:
+        rules.assemble_subsets.output
+    output:
+        expand("runs/{{run}}/subsets/{{subset}}/blat/split/gapcloser_part_{split}.fa", split=["{:02d}".format(s) for s in range(0,splits)])
+    threads: 1
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/split_fasta.py {input} {splits} runs/{wildcards.run}/subsets/{wildcards.subset}/blat/split/gapcloser"
+
+rule run_blat:
+    input:
+        fa = "runs/{run}/subsets/{subset}/blat/split/gapcloser_part_{split}.fa",
+        db = rules.grch38_fa.output,
+        ooc = rules.grch38_ooc.output
+    output:
+        "runs/{run}/subsets/{subset}/blat/split/{split}.blat"
+    threads: 1
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "blat {input.db} {input.fa} -t=dna -q=rna -fine -ooc={input.ooc} {output} -noHead"
+
+rule merge_blat:
+    input:
+        expand("runs/{{run}}/subsets/{{subset}}/blat/split/{split}.blat", split=["{:02d}".format(s) for s in range(0,splits)])
+    output:
+        "runs/{run}/subsets/{subset}/blat/combined.blat"
+    threads: 1
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "cat {input} > {output}"
+
+rule top_blat:
+    input:
+        rules.merge_blat.output
+    output:
+        blat = "runs/{run}/subsets/{subset}/blat/best.blat",
+        psr = "runs/{run}/subsets/{subset}/blat/best.psr"
+    threads: 1
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "pslReps {input} {output} -nohead -singleHit -minCover=0.98"
+
+rule blat_exome_genome_coverage:
+    input:
+        blat = rules.top_blat.output.blat,
+        gencode_db = rules.gencode_db.output
+    output:
+        "runs/{run}/subsets/{subset}/exome_results.txt"
+    threads: 1
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/filter-multi.py {input.gencode_db} {input.blat} > {output}"
+
+rule kallisto_db:
+    input:
+        rules.grch38_transcripts_fa.output
+    output:
+        "dbs/kallisto/grch38_transcripts_kallisto"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "kallisto index -i {output} {input}"
+
+rule kallisto:
+    input:
+        rules.kallisto_db.output,
+        fq1 = rules.generate_subsets.output.fq1,
+        fq2 = rules.generate_subsets.output.fq2,
+    output:
+        "runs/{run}/subsets/{subset}/kallisto/abundance.h5",
+        "runs/{run}/subsets/{subset}/kallisto/abundance.tsv",
+        "runs/{run}/subsets/{subset}/kallisto/run_info.json",
+    conda:
+        "envs/comparison.yaml"
+    threads:
+        16
+    shell:
+        "kallisto quant -i dbs/kallisto/grch38_transcripts_kallisto {input.fq1} {input.fq2} -o runs/{wildcards.run}/subsets/{wildcards.subset}/kallisto -t {threads}"
+
+rule subset_hisat2:
+    input:
+        fq1 = rules.generate_subsets.output.fq1,
+        hisat2 = "runs/{run}/hisat2/grch38.bam",
+    output:
+        "runs/{run}/subsets/{subset}/grch38.bam"
+    conda:
+        "envs/comparison.yaml"
+    threads: 2
+    shell:
+        """
+            sed -n '1~4s/\/1$//;1~4s/^@//p' {input.fq1} > "runs/{wildcards.run}/subsets/{wildcards.subset}/reads.txt"
+            picard -Xmx24G FilterSamReads READ_LIST_FILE="runs/{wildcards.run}/subsets/{wildcards.subset}/reads.txt" FILTER=includeReadList I={input.hisat2} O={output} TMP_DIR=runs/{wildcards.run}/subsets/{wildcards.subset}/picard_tmp WRITE_READS_FILES=false
+        """
+
+rule subset_genome_depth:
+    input:
+        hisat2 = rules.subset_hisat2.output,
+        gencode_bed = rules.gencode_exons_bed.output,
+    output:
+        "runs/{run}/subsets/{subset}/hisat2_depth.txt"
+    conda:
+        "envs/comparison.yaml"
+    threads: 1
+    shell:
+        "samtools depth -b {input.gencode_bed} {input.hisat2} > {output}"
+
+rule subset_transcript_depth:
+    input:
+        genome_depth = rules.subset_genome_depth.output,
+        gencode = rules.gencode_db.output,
+    output:
+        "runs/{run}/subsets/{subset}/transcript_read_depth.txt"
+    conda:
+        "envs/comparison.yaml"
+    threads: 2
+    shell:
+        "{workflow.basedir}/bin/transcript_coverage.py -g {input.gencode} -d {input.genome_depth} -o {output}"
+
+rule subset_average_transcript_depth:
+    input:
+        transcript_depth = rules.subset_transcript_depth.output,
+        nonoverlapping_transcripts = rules.nonoverlapping_gencode_transcripts.output
+    output:
+        "runs/{run}/subsets/{subset}/average_transcript_read_depth.txt"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/average_transcript_depth.py -c {input.transcript_depth} -t {input.nonoverlapping_transcripts} -o {output}"
+
+
+rule preprocessing_stats:
+    input:
+        soapnuke_stats = rules.soapnuke.output.preprocessing_stats,
+        hisat2 = rules.hisat2.output,
+        dedupped = rules.mark_duplicates.output.bam,
+    output:
+        "runs/{run}/preprocessing_stats.txt"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        """
+            raw_count=$(grep -F 'Total number of reads' {input.soapnuke_stats} | cut -f 2 | cut -f 1 -d ' ')
+            filtered_count=$(grep -F 'Number of filtered reads' {input.soapnuke_stats} | cut -f 2 | cut -f 1 -d ' ')
+            filtered_remaining_count=$(( ${{raw_count}} - ${{filtered_count}} ))
+            mapped_count=$(samtools view -c -f 67 -F 2304 {input.hisat2})
+            dedupped_count=$(samtools view -c -f 67 -F 3328 {input.dedupped})
+            echo -e "{wildcards.run}\t${{raw_count}}\t${{filtered_remaining_count}}\t${{mapped_count}}\t${{dedupped_count}}" > {output}
+        """
+
+rule filtering_stats:
+    input:
+        soapnuke_stats = rules.soapnuke.output.filtering_stats,
+    output:
+        "runs/{run}/filtering_stats.txt"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        """
+            adapter_reads=$(grep -F 'Reads with adapter' {input.soapnuke_stats} | cut -f 2 | cut -f 1 -d ' ')
+            lowqual_reads=$(grep -F 'Reads with low quality' {input.soapnuke_stats} | cut -f 2 | cut -f 1 -d ' ')
+            n_reads=$(grep -F 'Read with n rate exceed' {input.soapnuke_stats} | cut -f 2 | cut -f 1 -d ' ')
+
+            adapter_reads=$(( $adapter_reads / 2 ))
+            lowqual_reads=$(( $lowqual_reads / 2 ))
+            n_reads=$(( $n_reads / 2 ))
+
+            echo -e "{wildcards.run}\t${{adapter_reads}}\t${{lowqual_reads}}\t${{n_reads}}" > {output}
+        """
+
+rule assembly_completeness:
+    input:
+        lastal = rules.lastal_scaffolds.output,
+    output:
+        counts = "runs/{run}/subsets/{subset}/transcript_complete_counts.txt",
+        unambiguous_complete = "runs/{run}/subsets/{subset}/unambiguous_complete_transcript_names.txt"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/assembly_completeness.py -a <(zstd -dc {input.lastal}) -o {output.counts} -c {output.unambiguous_complete}"
+
+def other_platform_complete_file(wildcards):
+    run = wildcards.run
+    if config["runs"][run]["platform"] == "BGISEQ":
+        return "results/complete_transcripts/HiSeq_{}_complete_transcripts.txt".format(wildcards.subset)
+    else:
+        return "results/complete_transcripts/BGISEQ_{}_complete_transcripts.txt".format(wildcards.subset)
+
+def same_platform_complete_file(wildcards):
+    run = wildcards.run
+    if config["runs"][run]["platform"] == "HiSeq":
+        return "results/complete_transcripts/HiSeq_{}_complete_transcripts.txt".format(wildcards.subset)
+    else:
+        return "results/complete_transcripts/BGISEQ_{}_complete_transcripts.txt".format(wildcards.subset)
+
+rule incomplete_transcript_stats:
+    input:
+        lastal = rules.lastal_scaffolds.output,
+        transcript_depth = rules.subset_transcript_depth.output,
+        transcript_fa = rules.grch38_transcripts_fa.output,
+        other_platform_complete = other_platform_complete_file,
+        same_platform_complete = same_platform_complete_file,
+    output:
+        gap_info = "runs/{run}/subsets/{subset}/transcript_stats/wholeseq_read_gap_info.txt",
+        covered_info = "runs/{run}/subsets/{subset}/transcript_stats/k100_covered_info.txt",
+        missing_read_depth = "runs/{run}/subsets/{subset}/transcript_stats/missing_read_depth.txt",
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/incomplete_transcript_stats.py -a <(zstd -dc {input.lastal}) -g {input.transcript_depth} -f {input.transcript_fa} -o runs/{wildcards.run}/subsets/{wildcards.subset}/transcript_stats --other-complete-transcripts {input.other_platform_complete} --same-complete-transcripts {input.same_platform_complete}"
+
+rule gc_bias_plot:
+    input:
+        transcripts = "results/transcript_depth/min_transcript_depth_{subset}gb.txt",
+        transcript_read_depth = rules.subset_transcript_depth.output,
+        transcript_fa = rules.grch38_transcripts_fa.output,
+    output:
+        "results/gc_bias/{run}_{subset}gb_gc_bias.pdf"
+    conda:
+        "envs/comparison.yaml"
+    shell:
+        "{workflow.basedir}/bin/transcript_gc_bias.py -d {input.transcript_read_depth} -t {input.transcripts} -f {input.transcript_fa} -l {wildcards.run} -m metadata.txt -o {output} --title '{wildcards.run} GC-bias: {wildcards.subset}GB'"

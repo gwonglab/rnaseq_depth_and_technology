@@ -1,0 +1,51 @@
+runs:
+    COMBINEDERR:
+        platform: BGISEQ
+        subsets: [1, 2, 3, 4, 5, 6, 8, 10, 12, 20]
+        runs: [ERR1831362, ERR1831363, ERR1831364, ERR1831365, ERR1831366, ERR1831367, ERR1831368, ERR1831369, ERR1831370]
+    ERR1831362:
+        platform: BGISEQ
+        subsets: [1, 2, 3, 4, 5, 6]
+    ERR1831363:
+        platform: BGISEQ
+        subsets: [1, 2, 3, 4]
+    ERR1831364:
+        platform: BGISEQ
+        subsets: [1, 2, 3, 4, 5, 6]
+    ERR1831365:
+        platform: BGISEQ
+        subsets: [1, 2, 3, 4]
+    ERR1831366:
+        platform: BGISEQ
+        subsets: [1, 2, 3, 4, 5]
+    ERR1831367:
+        platform: BGISEQ
+        subsets: [1, 2, 3, 4, 5, 6]
+    ERR1831368:
+        platform: BGISEQ
+        subsets: [1, 2, 3, 4, 5, 6]
+    ERR1831369:
+        platform: BGISEQ
+        subsets: [1, 2, 3, 4, 5, 6, 8]
+    ERR1831370:
+        platform: BGISEQ
+        subsets: [1, 2, 3, 4]
+    SRR1261168:
+        platform: HiSeq
+        subsets: [1, 2, 3, 4, 5, 6, 8, 10, 12]
+    SRR1261170:
+        platform: HiSeq
+        subsets: [1, 2, 3, 4, 5, 6]
+    SRR515084:
+        platform: HiSeq
+        subsets: [1]
+    SRR950078:
+        platform: HiSeq
+        subsets: [1, 2, 3, 4, 5, 6, 8, 10]
+    SRR950080:
+        platform: HiSeq
+        subsets: [1, 2, 3, 4, 5, 6, 8]
+    SRR950084:
+        platform: HiSeq
+        subsets: [1, 2, 3, 4, 5, 6, 8, 10]
+summary_runs: [ERR1831362, ERR1831363, ERR1831364, ERR1831365, ERR1831366, ERR1831367, ERR1831368, ERR1831369, ERR1831370, SRR1261168, SRR1261170, SRR515084, SRR950078, SRR950080, SRR950084]
