@@ -67,11 +67,11 @@ PSL="${BASE}-${NUM_GB}-GCF_${REFBASE%%_*}"
 blat "${REFDIR}/${REFNAME}.fa" "${BASE}-${NUM_GB}.GapCloser.fa" \
     -ooc="${REFDIR}/${REFNAME}-11.ooc" -fine "${PSL}-fine.psl"
 
-# # filter the alignments - only high quality alignments - max 1 per scaffold
-# # tail skips table header; sort by scaffold name, then by aligned bases
-# # awk checks aligned bases against length & scaffold name against prior output 
-# tail -n +6 "${PSL}-fine.psl" \
-#    | sort -k 10.2,10.2r -k 10.10,10n -k 10.3,10n -k 1,1nr \
-#    | awk '($1 >= 0.95 * $11 && $10 != PRIOR) {print; PRIOR = $10}' \
-#    > "${PSL}-fine-filter.table"
+# filter the alignments - only high quality alignments - max 1 per scaffold
+# tail skips table header; sort by scaffold name, then by aligned bases
+# awk checks aligned bases against length & scaffold name against prior output 
+tail -n +6 "${PSL}-fine.psl" \
+   | sort -k 10.2,10.2r -k 10.10,10n -k 10.3,10n -k 1,1nr \
+   | awk '($1 >= 0.95 * $11 && $10 != PRIOR) {print; PRIOR = $10}' \
+   > "${PSL}-fine-filter.table"
 
