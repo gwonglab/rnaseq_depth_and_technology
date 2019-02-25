@@ -95,3 +95,6 @@ sbatch --array=1-6,8-16:2 ./assembly-alignment.sh SRR980471
 ./count-exon-bases.py REF/GCF_000001405.29_GRCh38.p3_genomic.gff \
     SRR980471-assembly/SRR980471-??G/SRR980471-??G-GCF_000001405.29-fine.psl
 
+# Figure 2 Analysis
+
+./single_exon_new.sh
